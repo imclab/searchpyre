@@ -1,0 +1,10 @@
+*.py[co]
+*.db
+*.log
+:*
+.DS_Store
+dist/
+build/
+searchpyre.egg-info/
+
+j.py
