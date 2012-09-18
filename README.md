@@ -3,7 +3,7 @@ SearchPyre
 
 #### Python Search Engine
 
-A simple Search Engine built on top of Redis with Python.
+A simple python Search Engine built on Redis
 
 ### Usage
 ```python

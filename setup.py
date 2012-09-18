@@ -12,7 +12,7 @@ setup(
     author_email = 'eugene.baumstein@gmail.com',
     url = 'https://github.com/ebaum/searchpyre',
     py_modules = ['searchpyre'],
-    install_requires = ['redis'],
+    install_requires = ['redis', 'hiredis'],
     license = 'MIT',
     packages = find_packages(),
     classifiers = [

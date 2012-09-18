@@ -17,6 +17,10 @@ from redis import StrictRedis
 NON_WORDS = re.compile("[^a-z0-9' ]")
 ARTICLES = ('the', 'of', 'to', 'and', 'an', 'in', 'is', 'it', 'you', 'that', 'this')
 
+def get_model_object(uid_key):
+    app_dot_model, pk = uid_key.split(':')[0].split('#')
+    model = get_model(*app_dot_model.split('.'))
+    return model.objects.get(pk=pk)
 
 def get_words(content, raw=False):
     words = NON_WORDS.sub(' ', content.lower()).split()
@@ -39,49 +43,77 @@ class Pyre(object):
 
     def autocomplete(self, query):
         results = self.redis.zrevrange('a:'+query, 0, -1, withscores=True)
+        results = [(get_model_object(item[0]), item[1]) for item in results]
         return results
 
     def search(self, query, offset=0, count=10):
-        keys = ['w:' + key for key in get_words(query, False)]
+        keys = ['w:' + key for key in get_words(query)]
         if not keys:
             return []
-        indexed = self.redis.get('indexed')
+        indexed = max(self.redis.get('indexed'), 1)
         pipe = self.redis.pipeline(False)
         for key in keys:
             pipe.zcard(key)
-        sizes = pipe.execute()
-        idfs = [max(math.log(float(indexed) / count, 2), 0) if count else 0 for count in sizes]
-        weights = dict((key, idfv) for key, size, idfv in zip(keys, sizes, idfs) if size)
+        counts = pipe.execute()
+        ranks = [max(math.log(float(indexed) / count, 2), 0) if count else 0 for count in counts]
+        weights = dict((key, rank) for key, count, rank in zip(keys, counts, ranks) if count)
         if not weights:
             return []
         temp_key = 'temp:' + os.urandom(8).encode('hex')
         try:
-            num = self.redis.zunionstore(temp_key, weights)
+            self.redis.zunionstore(temp_key, weights)
             results = self.redis.zrevrange(temp_key, offset, offset+count-1, withscores=True)
         finally:
             self.redis.delete(temp_key)
+        results = [(get_model_object(item[0]), item[1]) for item in results]
         return results
 
 
 class SearchIndex(object):
 
-    def __init__(self, name, **kwargs):
-        self.name = name
+    def __init__(self, **kwargs):
         self.redis = StrictRedis(**kwargs)
 
-    def add(self, text, autocompletion=False):
-        uid = self.redis.incr('indexed')
-        self.redis.hset(str(uid), 'text', text)
-        words = get_words(text)
+    def add(self, text, uid=None, autocompletion=False):
+        if not uid:
+            uid = self.redis.incr('indexed')
+        self.redis.hset(uid, 'text', text)
         pipe = self.redis.pipeline(False)
+        words = get_words(text)
         for word, value in words.iteritems():
             pipe.zadd('w:' + word, value, uid)
         if autocompletion:
             for i, word in enumerate(get_words(text, raw=True)):
                 for i, letter in enumerate(word):
-                    pipe.zadd('a:' + word[:2+i], uid, word)
+                    pipe.zadd('a:' + word[:2+i], 0, uid+':'+word)
         pipe.execute()
         return len(words)
+
+
+if os.environ.get('DJANGO_SETTINGS_MODULE'):
+
+    from django.db.models.loading import get_model
+
+    class SearchModelIndex(SearchIndex):
+
+        def __init__(self, app_dot_model, **kwargs):
+            self.model = get_model(*app_dot_model.split('.'))
+            self.app_dot_model = app_dot_model
+            self.redis = StrictRedis(**kwargs)
+
+        def index(self, *fields, **kwargs):
+            for field in fields:
+                for instance in self.model.objects.all():
+                    self.add(instance.__getattribute__(field),
+                        self.app_dot_model + '#' + str(instance.id), **kwargs)
+
+else:
+
+    class SearchModelIndex(SearchIndex):
+
+        def __init__(self, *args, **kwargs):
+            raise ImportError('SearchModelIndex only works in a django environment')
+
 
 #https://github.com/dracos/double-metaphone
 #http://atomboy.isa-geek.com/plone/Members/acoil/programing/double-metaphone/metaphone.py
