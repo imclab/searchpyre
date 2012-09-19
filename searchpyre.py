@@ -3,8 +3,8 @@
 # https://github.com/ebaum/searchpyre
 
 __author__ = 'Eugene Baumstein'
-__version__ = '0.1'
 __license__ = 'MIT'
+__version__ = '0.1'
 
 
 import re
@@ -17,15 +17,13 @@ from redis import StrictRedis
 NON_WORDS = re.compile("[^a-z0-9' ]")
 ARTICLES = ('the', 'of', 'to', 'and', 'an', 'in', 'is', 'it', 'you', 'that', 'this')
 
-def get_model_object(uid_key):
-    app_dot_model, pk = uid_key.split(':')[0].split('#')
-    model = get_model(*app_dot_model.split('.'))
-    return model.objects.get(pk=pk)
 
-def get_words(content, raw=False):
+def get_words(content, words_only=False):
+    if type(content) != str and type(content) != unicode:
+        return dict([(str(content), 1)])
     words = NON_WORDS.sub(' ', content.lower()).split()
     words = [word for word in words if word not in ARTICLES and len(word) > 1]
-    if raw:
+    if words_only:
         return words
     words = map(lambda x: x if x.isdigit() else double_metaphone(unicode(x)), words)
     words = [word for sublist in words for word in sublist if word]
@@ -41,10 +39,17 @@ class Pyre(object):
     def __init__(self, **kwargs):
         self.redis = StrictRedis(**kwargs)
 
+    def get_model_instance(self, uid_key):
+        app_dot_model, pk = uid_key.split(':')[0].split('#')
+        model = get_model(*app_dot_model.split('.'))
+        instance = model.objects.get(pk=pk)
+        instance.index = self.redis.hgetall(uid_key)
+        return instance
+
     def autocomplete(self, query):
         results = self.redis.zrevrange('a:'+query, 0, -1, withscores=True)
-        results = [(get_model_object(item[0]), item[1]) for item in results]
-        return results
+        results = [self.get_model_instance(item[0]) for item in results]
+        return set(results)
 
     def search(self, query, offset=0, count=10):
         keys = ['w:' + key for key in get_words(query)]
@@ -65,8 +70,8 @@ class Pyre(object):
             results = self.redis.zrevrange(temp_key, offset, offset+count-1, withscores=True)
         finally:
             self.redis.delete(temp_key)
-        results = [(get_model_object(item[0]), item[1]) for item in results]
-        return results
+        results = [self.get_model_instance(item[0]) for item in results]
+        return set(results)
 
 
 class SearchIndex(object):
@@ -74,20 +79,23 @@ class SearchIndex(object):
     def __init__(self, **kwargs):
         self.redis = StrictRedis(**kwargs)
 
-    def add(self, text, uid=None, autocompletion=False):
+    def index(self, text, uid=None, field='text', autocompletion=False):
         if not uid:
             uid = self.redis.incr('indexed')
-        self.redis.hset(uid, 'text', text)
+        self.redis.hset(uid, field, text)
         pipe = self.redis.pipeline(False)
-        words = get_words(text)
-        for word, value in words.iteritems():
-            pipe.zadd('w:' + word, value, uid)
         if autocompletion:
-            for i, word in enumerate(get_words(text, raw=True)):
+            for i, word in enumerate(get_words(text, words_only=True)):
                 for i, letter in enumerate(word):
-                    pipe.zadd('a:' + word[:2+i], 0, uid+':'+word)
+                    if len(word) > i + 2:
+                        pipe.zadd('a:' + word[:2+i], 0, uid+':'+word)
+        else:
+            for word, value in get_words(text).iteritems():
+                pipe.zadd('w:' + word, value, uid)
         pipe.execute()
-        return len(words)
+
+    def index_autocomplete(self, text, uid=None, field='text'):
+        self.index(text, uid, field, autocompletion=True)
 
 
 if os.environ.get('DJANGO_SETTINGS_MODULE'):
@@ -97,15 +105,19 @@ if os.environ.get('DJANGO_SETTINGS_MODULE'):
     class SearchModelIndex(SearchIndex):
 
         def __init__(self, app_dot_model, **kwargs):
-            self.model = get_model(*app_dot_model.split('.'))
-            self.app_dot_model = app_dot_model
+            self.app_dot_model = app_dot_model.lower()
+            self.model = get_model(*self.app_dot_model.split('.'))
             self.redis = StrictRedis(**kwargs)
 
         def index(self, *fields, **kwargs):
-            for field in fields:
+            for field in set(fields):
                 for instance in self.model.objects.all():
-                    self.add(instance.__getattribute__(field),
-                        self.app_dot_model + '#' + str(instance.id), **kwargs)
+                    super(SearchModelIndex, self).index(instance.__getattribute__(field),
+                        self.app_dot_model + '#' + str(instance.id), field, **kwargs)
+
+        def index_autocomplete(self, *fields, **kwargs):
+            kwargs['autocompletion'] = True
+            self.index(*fields, **kwargs)
 
 else:
 
