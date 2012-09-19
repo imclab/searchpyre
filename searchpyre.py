@@ -10,6 +10,8 @@ __version__ = '0.1'
 import re
 import os
 import math
+import time
+import datetime
 import collections
 import unicodedata
 from redis import StrictRedis
@@ -18,20 +20,19 @@ NON_WORDS = re.compile("[^a-z0-9' ]")
 ARTICLES = ('the', 'of', 'to', 'and', 'an', 'in', 'is', 'it', 'you', 'that', 'this')
 
 
-def get_words(content, words_only=False):
-    if type(content) != str and type(content) != unicode:
+def get_words(content, weighted=False):
+    if not isinstance(content, basestring):
         return dict([(str(content), 1)])
     words = NON_WORDS.sub(' ', content.lower()).split()
     words = [word for word in words if word not in ARTICLES and len(word) > 1]
-    if words_only:
+    if not weighted:
         return words
     words = map(lambda x: x if x.isdigit() else double_metaphone(unicode(x)), words)
     words = [word for sublist in words for word in sublist if word]
     counts = collections.defaultdict(float)
     for word in words:
         counts[word] += 1
-    weight_mapping = dict((word, count / len(words)) for word, count in counts.iteritems())
-    return weight_mapping
+    return dict((word, count / len(words)) for word, count in counts.iteritems())
 
 
 class Pyre(object):
@@ -39,16 +40,28 @@ class Pyre(object):
     def __init__(self, **kwargs):
         self.redis = StrictRedis(**kwargs)
 
-    def get_model_instance(self, uid_key):
-        app_dot_model, pk = uid_key.split(':')[0].split('#')
+    def map_instances(self, keys):
+        if not keys:
+            return []
+        app_dot_model, pk = keys[0].split('#')
         model = get_model(*app_dot_model.split('.'))
-        instance = model.objects.get(pk=pk)
-        instance.index = self.redis.hgetall(uid_key)
-        return instance
+        pipe = self.redis.pipeline(False)
+        pks = []
+        for key in keys:
+            pipe.hgetall(key)
+            pks.append(key.split('#')[1])
+        indexes = pipe.execute()
+        instances = model.objects.filter(pk__in=pks)
+        for i, instance in enumerate(instances):
+            instance.index = indexes[i]
+        return instances
+
+    def get_all(self, uid_dot_model):
+        return set(self.map_instances(self.redis.keys(uid_dot_model.lower()+'#*')))
 
     def autocomplete(self, query):
         results = self.redis.zrevrange('a:'+query, 0, -1, withscores=True)
-        results = [self.get_model_instance(item[0]) for item in results]
+        results = [self.map_instances(item[0])[0] for item in results]
         return set(results)
 
     def search(self, query, offset=0, count=10):
@@ -70,7 +83,7 @@ class Pyre(object):
             results = self.redis.zrevrange(temp_key, offset, offset+count-1, withscores=True)
         finally:
             self.redis.delete(temp_key)
-        results = [self.get_model_instance(item[0]) for item in results]
+        results = [self.map_instances(item[0])[0] for item in results]
         return set(results)
 
 
@@ -79,23 +92,23 @@ class SearchIndex(object):
     def __init__(self, **kwargs):
         self.redis = StrictRedis(**kwargs)
 
-    def index(self, text, uid=None, field='text', autocompletion=False):
+    def index(self, value, uid=None, key='text', autocompletion=False):
         if not uid:
             uid = self.redis.incr('indexed')
-        self.redis.hset(uid, field, text)
+        self.redis.hset(uid, key, value)
         pipe = self.redis.pipeline(False)
         if autocompletion:
-            for i, word in enumerate(get_words(text, words_only=True)):
+            for i, word in enumerate(get_words(value)):
                 for i, letter in enumerate(word):
                     if len(word) > i + 2:
                         pipe.zadd('a:' + word[:2+i], 0, uid+':'+word)
         else:
-            for word, value in get_words(text).iteritems():
+            for word, value in get_words(value, weighted=True).iteritems():
                 pipe.zadd('w:' + word, value, uid)
         pipe.execute()
 
-    def index_autocomplete(self, text, uid=None, field='text'):
-        self.index(text, uid, field, autocompletion=True)
+    def index_autocomplete(self, value, uid=None, key='text'):
+        self.index(value, uid, key, autocompletion=True)
 
 
 if os.environ.get('DJANGO_SETTINGS_MODULE'):
@@ -110,9 +123,12 @@ if os.environ.get('DJANGO_SETTINGS_MODULE'):
             self.redis = StrictRedis(**kwargs)
 
         def index(self, *fields, **kwargs):
-            for field in set(fields):
-                for instance in self.model.objects.all():
-                    super(SearchModelIndex, self).index(instance.__getattribute__(field),
+            for instance in self.model.objects.all():
+                for field in set(fields):
+                    value = instance.__getattribute__(field)
+                    if isinstance(value, datetime.date):
+                        value = time.mktime(value.timetuple())
+                    super(SearchModelIndex, self).index(value,
                         self.app_dot_model + '#' + str(instance.id), field, **kwargs)
 
         def index_autocomplete(self, *fields, **kwargs):
