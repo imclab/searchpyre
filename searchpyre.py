@@ -15,6 +15,7 @@ import datetime
 import collections
 import unicodedata
 from redis import StrictRedis
+from itertools import chain
 
 NON_WORDS = re.compile("[^a-z0-9' ]")
 KEY = re.compile('(\w+\.\w+)#([0-9]+):?(\w+)?') # 'app.model#1:word'
@@ -44,14 +45,13 @@ class Result(dict):
         self._key = None
         self._instance = None
 
-    def get(self):
+    @property
+    def instance(self):
         if self._key and self._instance is None:
             app_dot_model, pk, _ = KEY.match(self._key).groups()
             model = get_model(*app_dot_model.split('.'))
             self._instance = model.objects.get(pk=pk)
         return self._instance
-
-    instance = property(get)
 
 
 class Pyre(object):
@@ -112,7 +112,7 @@ class SearchIndex(object):
     def __init__(self, **kwargs):
         self.redis = StrictRedis(**kwargs)
 
-    def index(self, value, uid=None, key='text', autocompletion=False):
+    def index(self, value, uid=None, key='text', autocompletion=False, **kwargs):
         if not uid:
             uid = self.redis.incr('indexed')
         self.redis.hset(uid, key, value)
@@ -133,6 +133,7 @@ class SearchIndex(object):
 
 if os.environ.get('DJANGO_SETTINGS_MODULE'):
 
+    from django.db.models.manager import Manager
     from django.db.models.loading import get_model
 
     class SearchModelIndex(SearchIndex):
@@ -144,8 +145,13 @@ if os.environ.get('DJANGO_SETTINGS_MODULE'):
 
         def index(self, *fields, **kwargs):
             for instance in self.model.objects.all():
+                if kwargs.get('everything'):
+                    fields = chain( [field.name for field in instance._meta.fields],
+                                    [field.name for field in instance._meta._many_to_many()] )
                 for field in set(fields):
                     value = instance.__getattribute__(field)
+                    if isinstance(value, Manager):
+                        value = ','.join([ str(obj.id) for obj in value.all() ])
                     if isinstance(value, datetime.date):
                         value = time.mktime(value.timetuple())
                     super(SearchModelIndex, self).index(value,
