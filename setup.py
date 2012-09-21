@@ -6,8 +6,8 @@ from setuptools import setup, find_packages
 setup(
     name = 'searchpyre',
     version =  __import__('searchpyre').__version__,
-    description = 'Simple Python Search Engine built on Redis',
-    long_description = open('README.rst').read(),
+    description = 'Simple python Search Engine built on Redis',
+    long_description = open('README.md').read(),
     author = 'Eugene Baumstein',
     author_email = 'eugene.baumstein@gmail.com',
     url = 'https://github.com/ebaum/searchpyre',

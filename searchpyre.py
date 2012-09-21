@@ -17,17 +17,19 @@ import unicodedata
 from redis import StrictRedis
 
 NON_WORDS = re.compile("[^a-z0-9' ]")
+KEY = re.compile('(\w+\.\w+)#([0-9]+):?(\w+)?') # 'app.model#1:word'
 ARTICLES = ('the', 'of', 'to', 'and', 'an', 'in', 'is', 'it', 'you', 'that', 'this')
 
 
-def get_words(content, weighted=False):
-    if not isinstance(content, basestring):
-        return dict([(str(content), 1)])
-    words = NON_WORDS.sub(' ', content.lower()).split()
+def get_words(text, weighted=True):
+    if not isinstance(text, basestring):
+        return dict([(str(text), 1)])
+    words = NON_WORDS.sub(' ', text.lower()).split()
     words = [word for word in words if word not in ARTICLES and len(word) > 1]
     if not weighted:
         return words
     words = map(lambda x: x if x.isdigit() else double_metaphone(unicode(x)), words)
+    #words = [double_metaphone(unicode(word)) for word in words]
     words = [word for sublist in words for word in sublist if word]
     counts = collections.defaultdict(float)
     for word in words:
@@ -35,34 +37,52 @@ def get_words(content, weighted=False):
     return dict((word, count / len(words)) for word, count in counts.iteritems())
 
 
+class Result(dict):
+
+    def __init__(self, *args, **kwargs):
+        dict.__init__(self, *args, **kwargs)
+        self._key = None
+        self._instance = None
+
+    def get(self):
+        if self._key and self._instance is None:
+            app_dot_model, pk, _ = KEY.match(self._key).groups()
+            model = get_model(*app_dot_model.split('.'))
+            self._instance = model.objects.get(pk=pk)
+        return self._instance
+
+    instance = property(get)
+
+
 class Pyre(object):
 
     def __init__(self, **kwargs):
         self.redis = StrictRedis(**kwargs)
 
-    def map_instances(self, keys):
+    def _map_results(self, keys):
         if not keys:
             return []
-        app_dot_model, pk = keys[0].split('#')
-        model = get_model(*app_dot_model.split('.'))
         pipe = self.redis.pipeline(False)
-        pks = []
         for key in keys:
-            pipe.hgetall(key)
-            pks.append(key.split('#')[1])
+            app_dot_model, pk, _ = KEY.match(key).groups()
+            pipe.hgetall(app_dot_model + '#' + pk)
+        results = []
         indexes = pipe.execute()
-        instances = model.objects.filter(pk__in=pks)
-        for i, instance in enumerate(instances):
-            instance.index = indexes[i]
-        return instances
+        for i, index in enumerate(indexes):
+            result = Result(index)
+            result._key = keys[i]
+            results.append(result)
+        return results
 
-    def get_all(self, uid_dot_model):
-        return set(self.map_instances(self.redis.keys(uid_dot_model.lower()+'#*')))
+    def get_all(self, app_dot_model):
+        keys = self.redis.keys(app_dot_model.lower()+'#*')
+        results = self._map_results(keys)
+        return results
 
     def autocomplete(self, query):
-        results = self.redis.zrevrange('a:'+query, 0, -1, withscores=True)
-        results = [self.map_instances(item[0])[0] for item in results]
-        return set(results)
+        keys = self.redis.zrevrange('a:'+query, 0, -1, withscores=False)
+        results = self._map_results(keys)
+        return results
 
     def search(self, query, offset=0, count=10):
         keys = ['w:' + key for key in get_words(query)]
@@ -80,11 +100,11 @@ class Pyre(object):
         temp_key = 'temp:' + os.urandom(8).encode('hex')
         try:
             self.redis.zunionstore(temp_key, weights)
-            results = self.redis.zrevrange(temp_key, offset, offset+count-1, withscores=True)
+            keys = self.redis.zrevrange(temp_key, offset, offset+count-1, withscores=False)
         finally:
             self.redis.delete(temp_key)
-        results = [self.map_instances(item[0])[0] for item in results]
-        return set(results)
+        results = self._map_results(keys)
+        return results
 
 
 class SearchIndex(object):
@@ -98,12 +118,12 @@ class SearchIndex(object):
         self.redis.hset(uid, key, value)
         pipe = self.redis.pipeline(False)
         if autocompletion:
-            for i, word in enumerate(get_words(value)):
+            for i, word in enumerate(get_words(value, weighted=False)):
                 for i, letter in enumerate(word):
                     if len(word) > i + 2:
                         pipe.zadd('a:' + word[:2+i], 0, uid+':'+word)
         else:
-            for word, value in get_words(value, weighted=True).iteritems():
+            for word, value in get_words(value).iteritems():
                 pipe.zadd('w:' + word, value, uid)
         pipe.execute()
 
