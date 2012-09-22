@@ -56,8 +56,8 @@ class Result(dict):
 
 class Pyre(object):
 
-    def __init__(self, **kwargs):
-        self.redis = StrictRedis(**kwargs)
+    def __init__(self, *args, **kwargs):
+        self.redis = StrictRedis(*args, **kwargs)
 
     def _map_results(self, keys):
         if not keys:
@@ -69,13 +69,32 @@ class Pyre(object):
         results = []
         indexes = pipe.execute()
         for i, index in enumerate(indexes):
+            for field, value in index.iteritems():
+                if not value:
+                    continue
+                if value[0] == 'A':
+                    index[field] = map(int, value[1:].split(','))
+                elif value[0] == 'M':
+                    index[field] = int(value[1:])
+                elif value[0] == 'T':
+                    index[field] = float(value[1:])
+                elif value[0] == 'B':
+                    index[field] = bool(value[1:])
+                elif value[0] == 'I':
+                    index[field] = int(value[1:])
+                elif value[0] == 'F':
+                    index[field] = float(value[1:])
+                elif value[0] == 'S':
+                    index[field] = value[1:]
+                else:
+                    print '\033[93m', 'ERROR', field, value, '\033[0m'
             result = Result(index)
             result._key = keys[i]
             results.append(result)
         return results
 
-    def get_all(self, app_dot_model):
-        keys = self.redis.keys(app_dot_model.lower()+'#*')
+    def get_all(self, model):
+        keys = self.redis.keys(model._meta.app_label + '.' + model._meta.module_name + '#*')
         results = self._map_results(keys)
         return results
 
@@ -109,8 +128,8 @@ class Pyre(object):
 
 class SearchIndex(object):
 
-    def __init__(self, **kwargs):
-        self.redis = StrictRedis(**kwargs)
+    def __init__(self, *args, **kwargs):
+        self.redis = StrictRedis(*args, **kwargs)
 
     def index(self, value, uid=None, key='text', autocompletion=False, **kwargs):
         if not uid:
@@ -133,14 +152,15 @@ class SearchIndex(object):
 
 if os.environ.get('DJANGO_SETTINGS_MODULE'):
 
+    from django.db.models import Model
     from django.db.models.manager import Manager
     from django.db.models.loading import get_model
 
     class SearchModelIndex(SearchIndex):
 
-        def __init__(self, app_dot_model, **kwargs):
-            self.app_dot_model = app_dot_model.lower()
-            self.model = get_model(*self.app_dot_model.split('.'))
+        def __init__(self, model, **kwargs):
+            self.model = model
+            self.app_dot_model = model._meta.app_label + '.' + model._meta.module_name
             self.redis = StrictRedis(**kwargs)
 
         def index(self, *fields, **kwargs):
@@ -150,10 +170,22 @@ if os.environ.get('DJANGO_SETTINGS_MODULE'):
                                     [field.name for field in instance._meta._many_to_many()] )
                 for field in set(fields):
                     value = instance.__getattribute__(field)
-                    if isinstance(value, Manager):
-                        value = ','.join([ str(obj.id) for obj in value.all() ])
-                    if isinstance(value, datetime.date):
-                        value = time.mktime(value.timetuple())
+                    if isinstance(value, Manager) and value.all():
+                        value = 'A' + ','.join([ str(obj.id) for obj in value.all() ])
+                    elif isinstance(value, Model):
+                        value = 'M' + str(value.pk)
+                    elif isinstance(value, datetime.date):
+                        value = 'T' + str(time.mktime(value.timetuple()))
+                    elif isinstance(value, bool):
+                        value = 'B' + ('1' if value else '')
+                    elif isinstance(value, int):
+                        value = 'I' + str(value)
+                    elif isinstance(value, float):
+                        value = 'F' + str(value)
+                    elif isinstance(value, basestring) and value:
+                        value = 'S' + value
+                    else:
+                        value = ''
                     super(SearchModelIndex, self).index(value,
                         self.app_dot_model + '#' + str(instance.id), field, **kwargs)
 
