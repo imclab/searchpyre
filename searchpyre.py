@@ -53,6 +53,10 @@ class Result(dict):
             self._instance = model.objects.get(pk=pk)
         return self._instance
 
+    def __hash__(self):
+        app_dot_model, pk, _ = KEY.match(self._key).groups()
+        return hash(app_dot_model + pk)
+
 
 class Pyre(object):
 
@@ -73,19 +77,19 @@ class Pyre(object):
                 if not value:
                     continue
                 if value[0] == 'A':
-                    index[field] = map(int, value[1:].split(','))
+                    index[field] = value[2:].split(',')
                 elif value[0] == 'M':
-                    index[field] = int(value[1:])
+                    index[field] = int(value[2:])
                 elif value[0] == 'T':
-                    index[field] = float(value[1:])
+                    index[field] = float(value[2:])
                 elif value[0] == 'B':
-                    index[field] = bool(value[1:])
+                    index[field] = bool(value[2:])
                 elif value[0] == 'I':
-                    index[field] = int(value[1:])
+                    index[field] = int(value[2:])
                 elif value[0] == 'F':
-                    index[field] = float(value[1:])
+                    index[field] = float(value[2:])
                 elif value[0] == 'S':
-                    index[field] = value[1:]
+                    index[field] = value[2:]
                 else:
                     print '\033[93m', 'ERROR', field, value, '\033[0m'
             result = Result(index)
@@ -139,7 +143,7 @@ class SearchIndex(object):
         if autocompletion:
             for i, word in enumerate(get_words(value, weighted=False)):
                 for i, letter in enumerate(word):
-                    if len(word) > i + 2:
+                    if len(word) > i + 1:
                         pipe.zadd('a:' + word[:2+i], 0, uid+':'+word)
         else:
             for word, value in get_words(value).iteritems():
@@ -171,19 +175,19 @@ if os.environ.get('DJANGO_SETTINGS_MODULE'):
                 for field in set(fields):
                     value = instance.__getattribute__(field)
                     if isinstance(value, Manager) and value.all():
-                        value = 'A' + ','.join([ str(obj.id) for obj in value.all() ])
+                        value = 'A|' + ','.join([ str(obj.id) for obj in value.all() ])
                     elif isinstance(value, Model):
-                        value = 'M' + str(value.pk)
+                        value = 'M|' + str(value.pk)
                     elif isinstance(value, datetime.date):
-                        value = 'T' + str(time.mktime(value.timetuple()))
+                        value = 'T|' + str(time.mktime(value.timetuple()))
                     elif isinstance(value, bool):
-                        value = 'B' + ('1' if value else '')
+                        value = 'B|' + ('1' if value else '')
                     elif isinstance(value, int):
-                        value = 'I' + str(value)
+                        value = 'I|' + str(value)
                     elif isinstance(value, float):
-                        value = 'F' + str(value)
+                        value = 'F|' + str(value)
                     elif isinstance(value, basestring) and value:
-                        value = 'S' + value
+                        value = 'S|' + value
                     else:
                         value = ''
                     super(SearchModelIndex, self).index(value,
