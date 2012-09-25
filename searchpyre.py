@@ -17,19 +17,19 @@ import unicodedata
 from redis import StrictRedis
 from itertools import chain
 
-NON_WORDS = re.compile("[^a-z0-9' ]")
-KEY = re.compile('(\w+\.\w+)#([0-9]+):?(\w+)?') # 'app.model#1:word'
-ARTICLES = ('the', 'of', 'to', 'and', 'an', 'in', 'is', 'it', 'you', 'that', 'this')
+_NON_WORDS = re.compile("[^a-z0-9' ]")
+_KEY = re.compile('(\w+\.\w+)#([0-9]+):?(\w+)?') # 'app.model#1:word'
+_ARTICLES = ('the', 'of', 'to', 'and', 'an', 'in', 'is', 'it', 'you', 'that', 'this')
 
 
-def get_words(text, weighted=True):
+def _get_words(text, weighted=True):
     if not isinstance(text, basestring):
         return dict([(str(text), 1)])
-    words = NON_WORDS.sub(' ', text.lower()).split()
-    words = [word for word in words if word not in ARTICLES and len(word) > 1]
+    words = _NON_WORDS.sub(' ', text.lower()).split()
+    words = [word for word in words if word not in _ARTICLES and len(word) > 1]
     if not weighted:
         return words
-    words = map(lambda x: x if x.isdigit() else double_metaphone(unicode(x)), words)
+    words = map(lambda x: x if x.isdigit() else _double_metaphone(unicode(x)), words)
     #words = [double_metaphone(unicode(word)) for word in words]
     words = [word for sublist in words for word in sublist if word]
     counts = collections.defaultdict(float)
@@ -38,7 +38,7 @@ def get_words(text, weighted=True):
     return dict((word, count / len(words)) for word, count in counts.iteritems())
 
 
-class Result(dict):
+class _Result(dict):
 
     def __init__(self, *args, **kwargs):
         dict.__init__(self, *args, **kwargs)
@@ -48,13 +48,13 @@ class Result(dict):
     @property
     def instance(self):
         if self._key and self._instance is None:
-            app_dot_model, pk, _ = KEY.match(self._key).groups()
+            app_dot_model, pk, _ = _KEY.match(self._key).groups()
             model = get_model(*app_dot_model.split('.'))
             self._instance = model.objects.get(pk=pk)
         return self._instance
 
     def __hash__(self):
-        app_dot_model, pk, _ = KEY.match(self._key).groups()
+        app_dot_model, pk, _ = _KEY.match(self._key).groups()
         return hash(app_dot_model + pk)
 
 
@@ -68,7 +68,7 @@ class Pyre(object):
             return []
         pipe = self.redis.pipeline(False)
         for key in keys:
-            app_dot_model, pk, _ = KEY.match(key).groups()
+            app_dot_model, pk, _ = _KEY.match(key).groups()
             pipe.hgetall(app_dot_model + '#' + pk)
         results = []
         indexes = pipe.execute()
@@ -92,7 +92,7 @@ class Pyre(object):
                     index[field] = value[2:]
                 else:
                     print '\033[93m', 'ERROR', field, value, '\033[0m'
-            result = Result(index)
+            result = _Result(index)
             result._key = keys[i]
             results.append(result)
         return results
@@ -108,7 +108,7 @@ class Pyre(object):
         return results
 
     def search(self, query, offset=0, count=10):
-        keys = ['w:' + key for key in get_words(query)]
+        keys = ['w:' + key for key in _get_words(query)]
         if not keys:
             return []
         indexed = max(self.redis.get('indexed'), 1)
@@ -141,12 +141,12 @@ class SearchIndex(object):
         self.redis.hset(uid, key, value)
         pipe = self.redis.pipeline(False)
         if autocompletion:
-            for i, word in enumerate(get_words(value, weighted=False)):
+            for i, word in enumerate(_get_words(value, weighted=False)):
                 for i, letter in enumerate(word):
                     if len(word) > i + 1:
                         pipe.zadd('a:' + word[:2+i], 0, uid+':'+word)
         else:
-            for word, value in get_words(value).iteritems():
+            for word, value in _get_words(value).iteritems():
                 pipe.zadd('w:' + word, value, uid)
         pipe.execute()
 
@@ -208,7 +208,7 @@ else:
 #https://github.com/dracos/double-metaphone
 #http://atomboy.isa-geek.com/plone/Members/acoil/programing/double-metaphone/metaphone.py
 # {{{
-def double_metaphone(st):
+def _double_metaphone(st):
     """double_metaphone(string) -> (string, string or '')
     returns the double metaphone codes for given string - always a tuple
     there are no checks done on the input string, but it should be a single word or name."""
