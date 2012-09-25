@@ -157,18 +157,25 @@ class SearchIndex(object):
 if os.environ.get('DJANGO_SETTINGS_MODULE'):
 
     from django.db.models import Model
+    from django.db.models.base import ModelBase
     from django.db.models.manager import Manager
     from django.db.models.loading import get_model
 
     class SearchModelIndex(SearchIndex):
 
-        def __init__(self, model, **kwargs):
-            self.model = model
-            self.app_dot_model = model._meta.app_label + '.' + model._meta.module_name
+        def __init__(self, source, **kwargs):
+            self.source = source
+            self.app_dot_model = source._meta.app_label + '.' + source._meta.module_name
             self.redis = StrictRedis(**kwargs)
 
         def index(self, *fields, **kwargs):
-            for instance in self.model.objects.all():
+            if isinstance(self.source, ModelBase):
+                instances = self.source.objects.all()
+            elif isinstance(self.source, Model):
+                instances = [self.source]
+            else:
+                raise ImportError('Only Model or Model instances are valid inputs')
+            for instance in instances:
                 if kwargs.get('everything'):
                     fields = chain( [field.name for field in instance._meta.fields],
                                     [field.name for field in instance._meta._many_to_many()] )
