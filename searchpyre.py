@@ -103,8 +103,14 @@ class Pyre(object):
         return results
 
     def autocomplete(self, query):
-        keys = self.redis.zrevrange('a:'+query, 0, -1, withscores=False)
-        results = self._map_results(keys)
+        keys = ['a:' + key for key in set(_get_words(query, weighted=False))]
+        if not keys:
+            return []
+        pipe = self.redis.pipeline(False)
+        for key in keys:
+            pipe.zrevrange(key, 0, -1, withscores=False)
+        ikeys = [ikey for sublist in pipe.execute() for ikey in sublist]
+        results = list(set(self._map_results(ikeys)))
         return results
 
     def search(self, query, offset=0, count=10):
