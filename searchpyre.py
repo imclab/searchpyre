@@ -22,6 +22,14 @@ _KEY = re.compile('(\w+\.\w+)#([0-9]+):?(\w+)?') # 'app.model#1:word'
 _ARTICLES = ('the', 'of', 'to', 'and', 'an', 'in', 'is', 'it', 'you', 'that', 'this')
 
 
+def _unique(seq):
+    seen = set()
+    for item in seq:
+        if item not in seen:
+            seen.add(item)
+            yield item
+
+
 def _get_words(text, weighted=True):
     if not isinstance(text, basestring):
         return dict([(str(text), 1)])
@@ -103,14 +111,14 @@ class Pyre(object):
         return results
 
     def autocomplete(self, query):
-        keys = ['a:' + key for key in set(_get_words(query, weighted=False))]
+        keys = ['a:' + key for key in _unique(_get_words(query, weighted=False))]
         if not keys:
             return []
         pipe = self.redis.pipeline(False)
         for key in keys:
             pipe.zrevrange(key, 0, -1, withscores=False)
         ikeys = [ikey for sublist in pipe.execute() for ikey in sublist]
-        results = list(set(self._map_results(ikeys)))
+        results = [result for result in _unique(self._map_results(ikeys))]
         return results
 
     def search(self, query, offset=0, count=10):
