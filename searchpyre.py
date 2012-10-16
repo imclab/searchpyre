@@ -53,6 +53,10 @@ class _Result(dict):
         self._key = None
         self._instance = None
 
+    def __hash__(self):
+        app_dot_model, pk, _ = _KEY.match(self._key).groups()
+        return hash(app_dot_model + pk)
+
     @property
     def instance(self):
         if self._key and self._instance is None:
@@ -60,10 +64,6 @@ class _Result(dict):
             model = get_model(*app_dot_model.split('.'))
             self._instance = model.objects.get(pk=pk)
         return self._instance
-
-    def __hash__(self):
-        app_dot_model, pk, _ = _KEY.match(self._key).groups()
-        return hash(app_dot_model + pk)
 
 
 class Pyre(object):
@@ -175,7 +175,7 @@ if os.environ.get('DJANGO_SETTINGS_MODULE'):
     from django.db.models.manager import Manager
     from django.db.models.loading import get_model
 
-    class SearchModelIndex(SearchIndex):
+    class DjangoSearchIndex(SearchIndex):
 
         def __init__(self, source, **kwargs):
             self.source = source
@@ -211,7 +211,7 @@ if os.environ.get('DJANGO_SETTINGS_MODULE'):
                         value = 'S|' + value
                     else:
                         value = ''
-                    super(SearchModelIndex, self).index(value,
+                    super(DjangoSearchIndex, self).index(value,
                         self.app_dot_model + '#' + str(instance.id), field, **kwargs)
 
         def index_autocomplete(self, *fields, **kwargs):
@@ -220,10 +220,10 @@ if os.environ.get('DJANGO_SETTINGS_MODULE'):
 
 else:
 
-    class SearchModelIndex(SearchIndex):
+    class DjangoSearchIndex(SearchIndex):
 
         def __init__(self, *args, **kwargs):
-            raise ImportError('SearchModelIndex only works in a django environment')
+            raise ImportError('DjangoSearchIndex only works in a django environment')
 
 
 #https://github.com/dracos/double-metaphone
