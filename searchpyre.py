@@ -38,7 +38,6 @@ def _get_words(text, weighted=True):
     if not weighted:
         return words
     words = map(lambda x: x if x.isdigit() else _double_metaphone(unicode(x)), words)
-    #words = [double_metaphone(unicode(word)) for word in words]
     words = [word for sublist in words for word in sublist if word]
     counts = collections.defaultdict(float)
     for word in words:
@@ -74,7 +73,7 @@ class Pyre(object):
     def _map_results(self, keys):
         if not keys:
             return []
-        pipe = self.redis.pipeline(False)
+        pipe = self.redis.pipeline()
         for key in keys:
             app_dot_model, pk, _ = _KEY.match(key).groups()
             pipe.hgetall(app_dot_model + '#' + pk)
@@ -114,7 +113,7 @@ class Pyre(object):
         keys = ['a:' + key for key in _unique(_get_words(query, weighted=False))]
         if not keys:
             return []
-        pipe = self.redis.pipeline(False)
+        pipe = self.redis.pipeline()
         for key in keys:
             pipe.zrevrange(key, 0, -1, withscores=False)
         ikeys = [ikey for sublist in pipe.execute() for ikey in sublist]
@@ -126,7 +125,7 @@ class Pyre(object):
         if not keys:
             return []
         indexed = max(self.redis.get('indexed'), 1)
-        pipe = self.redis.pipeline(False)
+        pipe = self.redis.pipeline()
         for key in keys:
             pipe.zcard(key)
         counts = pipe.execute()
@@ -153,7 +152,7 @@ class SearchIndex(object):
         if not uid:
             uid = self.redis.incr('indexed')
         self.redis.hset(uid, key, value)
-        pipe = self.redis.pipeline(False)
+        pipe = self.redis.pipeline()
         if autocompletion:
             for i, word in enumerate(_get_words(value, weighted=False)):
                 for i, letter in enumerate(word):
